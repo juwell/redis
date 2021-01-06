@@ -951,19 +951,28 @@ struct sharedObjectsStruct {
 };
 
 /* ZSETs use a specialized version of Skiplists */
+// 跳跃表节点
 typedef struct zskiplistNode {
     sds ele;
     double score;
+    // 后退指针, 指向当前节点的前一个节点, 从表尾向表头遍历时使用
     struct zskiplistNode *backward;
     struct zskiplistLevel {
+        // 前进指针, 用于访问位于表尾方向的其他节点
         struct zskiplistNode *forward;
+        // 跨度, 前进指针所指向节点和当前节点的距离
         unsigned long span;
     } level[];
 } zskiplistNode;
 
+// 跳跃表列表
+// 只在有序集合键
 typedef struct zskiplist {
+    // 指向头尾节点的指针
     struct zskiplistNode *header, *tail;
+    // 跳跃表长度, 即目前包含的节点数量(表头节点不算)
     unsigned long length;
+    // 跳跃表内层数最大的那个节点的层数(表头节点不算)
     int level;
 } zskiplist;
 
