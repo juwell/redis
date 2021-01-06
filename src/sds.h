@@ -33,6 +33,7 @@
 #ifndef __SDS_H
 #define __SDS_H
 
+// 预分配空间大小阈值, 1M
 #define SDS_MAX_PREALLOC (1024*1024)
 extern const char *SDS_NOINIT;
 
