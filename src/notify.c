@@ -89,7 +89,8 @@ sds keyspaceEventsFlagsToString(int flags) {
     return res;
 }
 
-/* The API provided to the rest of the Redis core is a simple function:
+/* 发送通知
+ * The API provided to the rest of the Redis core is a simple function:
  *
  * notifyKeyspaceEvent(char *event, robj *key, int dbid);
  *

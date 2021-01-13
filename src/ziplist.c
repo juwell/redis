@@ -21,18 +21,24 @@
  * the ziplist occupies, including the four bytes of the zlbytes field itself.
  * This value needs to be stored to be able to resize the entire structure
  * without the need to traverse it first.
+ * 记录整个压缩列表占用的内存字节数, 在对压缩列表进行内存重分配, 或者计算zllend的位置时使用
  *
  * <uint32_t zltail> is the offset to the last entry in the list. This allows
  * a pop operation on the far side of the list without the need for full
  * traversal.
+ * 记录压缩列表表尾节点距离压缩列表的起始地址有多少字节, 通过这个偏移量, 程序无需遍历
+ * 整个压缩列表就可以确定表尾节点的位置
  *
  * <uint16_t zllen> is the number of entries. When there are more than
  * 2^16-2 entries, this value is set to 2^16-1 and we need to traverse the
  * entire list to know how many items it holds.
+ * 记录了压缩列表包含节点的数量, 当数量大于2^16-2(65534)时, 该值被设置为2^16-1(65535),
+ * 此时只有遍历所有节点才能知道节点的数量
  *
  * <uint8_t zlend> is a special entry representing the end of the ziplist.
  * Is encoded as a single byte equal to 255. No other normal entry starts
  * with a byte set to the value of 255.
+ * 用于标记压缩列表的结尾, 值固定为255, 并且规定, 其他节点不可以255为开头
  *
  * ZIPLIST ENTRIES
  * ===============

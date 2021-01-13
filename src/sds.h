@@ -1,4 +1,5 @@
 /* SDSLib 2.0 -- A C dynamic strings library
+ * 动态字符串
  *
  * Copyright (c) 2006-2015, Salvatore Sanfilippo <antirez at gmail dot com>
  * Copyright (c) 2015, Oran Agra
