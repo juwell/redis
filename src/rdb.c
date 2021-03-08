@@ -1223,7 +1223,8 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     size_t processed = 0;
     int j;
     long key_count = 0;
-    long long cow_updated_time = 0;
+    long long info_updated_time = 0;
+    char *pname = (rdbflags & RDBFLAGS_AOF_PREAMBLE) ? "AOF rewrite" :  "RDB";
 
     if (server.rdb_checksum)
         rdb->update_cksum = rioGenericUpdateChecksum;
@@ -1270,22 +1271,16 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
                 aofReadDiffFromParent();
             }
 
-            /* Update COW info every 1 second (approximately).
+            /* Update child info every 1 second (approximately).
              * in order to avoid calling mstime() on each iteration, we will
              * check the diff every 1024 keys */
-            if ((key_count & 1023) == 0) {
-                key_count = 0;
+            if ((key_count++ & 1023) == 0) {
                 long long now = mstime();
-                if (now - cow_updated_time >= 1000) {
-                    if (rdbflags & RDBFLAGS_AOF_PREAMBLE) {
-                        sendChildCOWInfo(CHILD_TYPE_AOF, 0, "AOF rewrite");
-                    } else {
-                        sendChildCOWInfo(CHILD_TYPE_RDB, 0, "RDB");
-                    }
-                    cow_updated_time = now;
+                if (now - info_updated_time >= 1000) {
+                    sendChildInfo(CHILD_INFO_TYPE_CURRENT_INFO, key_count, pname);
+                    info_updated_time = now;
                 }
             }
-            key_count++;
         }
         dictReleaseIterator(di);
         di = NULL; /* So that we don't release it again on error. */
@@ -1438,7 +1433,7 @@ int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
         redisSetCpuAffinity(server.bgsave_cpulist);
         retval = rdbSave(filename,rsi);
         if (retval == C_OK) {
-            sendChildCOWInfo(CHILD_TYPE_RDB, 1, "RDB");
+            sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
         }
         exitFromChild((retval == C_OK) ? 0 : 1);
     } else {
@@ -2181,16 +2176,17 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key) {
             return NULL;
         }
         moduleType *mt = moduleTypeLookupModuleByID(moduleid);
-        char name[10];
 
         if (rdbCheckMode && rdbtype == RDB_TYPE_MODULE_2) {
+            char name[10];
             moduleTypeNameByID(name,moduleid);
             return rdbLoadCheckModuleValue(rdb,name);
         }
 
         if (mt == NULL) {
+            char name[10];
             moduleTypeNameByID(name,moduleid);
-            rdbReportCorruptRDB("The RDB file contains module data I can't load: no matching module '%s'", name);
+            rdbReportCorruptRDB("The RDB file contains module data I can't load: no matching module type '%s'", name);
             return NULL;
         }
         RedisModuleIO io;
@@ -2217,7 +2213,8 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key) {
                 return NULL;
             }
             if (eof != RDB_MODULE_OPCODE_EOF) {
-                rdbReportCorruptRDB("The RDB file contains module data for the module '%s' that is not terminated by the proper module value EOF marker", name);
+                rdbReportCorruptRDB("The RDB file contains module data for the module '%s' that is not terminated by "
+                                    "the proper module value EOF marker", moduleTypeModuleName(mt));
                 if (ptr) {
                     o = createModuleObject(mt,ptr); /* creating just in order to easily destroy */
                     decrRefCount(o);
@@ -2227,8 +2224,9 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key) {
         }
 
         if (ptr == NULL) {
-            moduleTypeNameByID(name,moduleid);
-            rdbReportCorruptRDB("The RDB file contains module data for the module type '%s', that the responsible module is not able to load. Check for modules log above for additional clues.", name);
+            rdbReportCorruptRDB("The RDB file contains module data for the module type '%s', that the responsible "
+                                "module is not able to load. Check for modules log above for additional clues.",
+                                moduleTypeModuleName(mt));
             return NULL;
         }
         o = createModuleObject(mt,ptr);
@@ -2805,7 +2803,7 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
             retval = C_ERR;
 
         if (retval == C_OK) {
-            sendChildCOWInfo(CHILD_TYPE_RDB, 1, "RDB");
+            sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
         }
 
         rioFreeFd(&rdb);

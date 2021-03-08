@@ -227,7 +227,7 @@ static struct config {
     int scan_mode;
     int intrinsic_latency_mode;
     int intrinsic_latency_duration;
-    char *pattern;
+    sds pattern;
     char *rdb_filename;
     int bigkeys;
     int memkeys;
@@ -237,6 +237,7 @@ static struct config {
     char *auth;
     int askpass;
     char *user;
+    int quoted_input;   /* Force input args to be treated as quoted strings */
     int output; /* output mode, see OUTPUT_* defines */
     int push_output; /* Should we display spontaneous PUSH replies */
     sds mb_delim;
@@ -763,6 +764,23 @@ static void freeHintsCallback(void *ptr) {
  * Networking / parsing
  *--------------------------------------------------------------------------- */
 
+/* Unquote a null-terminated string and return it as a binary-safe sds. */
+static sds unquoteCString(char *str) {
+    int count;
+    sds *unquoted = sdssplitargs(str, &count);
+    sds res = NULL;
+
+    if (unquoted && count == 1) {
+        res = unquoted[0];
+        unquoted[0] = NULL;
+    }
+
+    if (unquoted)
+        sdsfreesplitres(unquoted, count);
+
+    return res;
+}
+
 /* Send AUTH command to the server */
 static int cliAuth(redisContext *ctx, char *user, char *auth) {
     redisReply *reply;
@@ -819,6 +837,9 @@ static int cliConnect(int flags) {
     if (context == NULL || flags & CC_FORCE) {
         if (context != NULL) {
             redisFree(context);
+            config.dbnum = 0;
+            config.in_multi = 0;
+            cliRefreshPrompt();
         }
 
         if (config.hostsocket == NULL) {
@@ -1530,6 +1551,8 @@ static int parseOptions(int argc, char **argv) {
             config.output = OUTPUT_RAW;
         } else if (!strcmp(argv[i],"--no-raw")) {
             config.output = OUTPUT_STANDARD;
+        } else if (!strcmp(argv[i],"--quoted-input")) {
+            config.quoted_input = 1;
         } else if (!strcmp(argv[i],"--csv")) {
             config.output = OUTPUT_CSV;
         } else if (!strcmp(argv[i],"--latency")) {
@@ -1554,7 +1577,15 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"--scan")) {
             config.scan_mode = 1;
         } else if (!strcmp(argv[i],"--pattern") && !lastarg) {
-            config.pattern = argv[++i];
+            sdsfree(config.pattern);
+            config.pattern = sdsnew(argv[++i]);
+        } else if (!strcmp(argv[i],"--quoted-pattern") && !lastarg) {
+            sdsfree(config.pattern);
+            config.pattern = unquoteCString(argv[++i]);
+            if (!config.pattern) {
+                fprintf(stderr,"Invalid quoted string specified for --quoted-pattern.\n");
+                exit(1);
+            }
         } else if (!strcmp(argv[i],"--intrinsic-latency") && !lastarg) {
             config.intrinsic_latency_mode = 1;
             config.intrinsic_latency_duration = atoi(argv[++i]);
@@ -1695,6 +1726,8 @@ static int parseOptions(int argc, char **argv) {
             config.sslconfig.key = argv[++i];
         } else if (!strcmp(argv[i],"--tls-ciphers") && !lastarg) {
             config.sslconfig.ciphers = argv[++i];
+        } else if (!strcmp(argv[i],"--insecure")) {
+            config.sslconfig.skip_cert_verify = 1;
         #ifdef TLS1_3_VERSION
         } else if (!strcmp(argv[i],"--tls-ciphersuites") && !lastarg) {
             config.sslconfig.ciphersuites = argv[++i];
@@ -1820,6 +1853,7 @@ static void usage(void) {
 "  --cacertdir <dir>  Directory where trusted CA certificates are stored.\n"
 "                     If neither cacert nor cacertdir are specified, the default\n"
 "                     system-wide trusted root certs configuration will apply.\n"
+"  --insecure         Allow insecure TLS connection by skipping cert validation.\n"
 "  --cert <file>      Client certificate to authenticate with.\n"
 "  --key <file>       Private key file to authenticate with.\n"
 "  --tls-ciphers <list> Sets the list of prefered ciphers (TLSv1.2 and below)\n"
@@ -1835,6 +1869,7 @@ static void usage(void) {
 "  --raw              Use raw formatting for replies (default when STDOUT is\n"
 "                     not a tty).\n"
 "  --no-raw           Force formatted output even when STDOUT is not a tty.\n"
+"  --quoted-input     Force input to be handled as quoted strings.\n"
 "  --csv              Output in CSV format.\n"
 "  --show-pushes <yn> Whether to print RESP3 PUSH messages.  Enabled by default when\n"
 "                     STDOUT is a tty but can be overriden with --show-pushes no.\n"
@@ -1870,6 +1905,8 @@ static void usage(void) {
 "  --scan             List all keys using the SCAN command.\n"
 "  --pattern <pat>    Keys pattern when using the --scan, --bigkeys or --hotkeys\n"
 "                     options (default: *).\n"
+"  --quoted-pattern <pat> Same as --pattern, but the specified string can be\n"
+"                         quoted, in order to pass an otherwise non binary-safe string.\n"
 "  --intrinsic-latency <sec> Run a test to measure intrinsic system latency.\n"
 "                     The test will run for the specified amount of seconds.\n"
 "  --eval <file>      Send an EVAL command using the Lua script at <file>.\n"
@@ -1895,6 +1932,7 @@ static void usage(void) {
 "  redis-cli get mypasswd\n"
 "  redis-cli -r 100 lpush mylist x\n"
 "  redis-cli -r 100 -i 1 info | grep used_memory_human:\n"
+"  redis-cli --quoted-input set '\"null-\\x00-separated\"' value\n"
 "  redis-cli --eval myscript.lua key1 key2 , arg1 arg2 arg3\n"
 "  redis-cli --scan --pattern '*:12345*'\n"
 "\n"
@@ -1924,15 +1962,28 @@ static int confirmWithYes(char *msg, int ignore_force) {
     return (nread != 0 && !strcmp("yes", buf));
 }
 
-/* Turn the plain C strings into Sds strings */
-static char **convertToSds(int count, char** args) {
-  int j;
-  char **sds = zmalloc(sizeof(char*)*count);
+/* Create an sds array from argv, either as-is or by dequoting every
+ * element. When quoted is non-zero, may return a NULL to indicate an
+ * invalid quoted string.
+ */
+static sds *getSdsArrayFromArgv(int argc, char **argv, int quoted) {
+    sds *res = sds_malloc(sizeof(sds) * argc);
 
-  for(j = 0; j < count; j++)
-    sds[j] = sdsnew(args[j]);
+    for (int j = 0; j < argc; j++) {
+        if (quoted) {
+            sds unquoted = unquoteCString(argv[j]);
+            if (!unquoted) {
+                while (--j >= 0) sdsfree(res[j]);
+                sds_free(res);
+                return NULL;
+            }
+            res[j] = unquoted;
+        } else {
+            res[j] = sdsnew(argv[j]);
+        }
+    }
 
-  return sds;
+    return res;
 }
 
 static int issueCommandRepeat(int argc, char **argv, long repeat) {
@@ -2165,13 +2216,19 @@ static void repl(void) {
 
 static int noninteractive(int argc, char **argv) {
     int retval = 0;
-    if (config.stdinarg) {
-        argv = zrealloc(argv, (argc+1)*sizeof(char*));
-        argv[argc] = readArgFromStdin();
-        retval = issueCommand(argc+1, argv);
-    } else {
-        retval = issueCommand(argc, argv);
+    sds *sds_args = getSdsArrayFromArgv(argc, argv, config.quoted_input);
+    if (!sds_args) {
+        printf("Invalid quoted string\n");
+        return 1;
     }
+    if (config.stdinarg) {
+        sds_args = sds_realloc(sds_args, (argc + 1) * sizeof(sds));
+        sds_args[argc] = readArgFromStdin();
+        argc++;
+    }
+
+    retval = issueCommand(argc, sds_args);
+    sdsfreesplitres(sds_args, argc);
     return retval;
 }
 
@@ -2955,7 +3012,7 @@ static void clusterManagerOptimizeAntiAffinity(clusterManagerNodeArray *ipnodes,
                                                    ip_count,
                                                    &offenders,
                                                    &offending_len);
-        if (score == 0) break; // Optimal anti affinity reached
+        if (score == 0 || offending_len == 0) break; // Optimal anti affinity reached
         /* We'll try to randomly swap a slave's assigned master causing
          * an affinity problem with another random slave, to see if we
          * can improve the affinity. */
@@ -6940,6 +6997,10 @@ void sendCapa() {
     sendReplconf("capa", "eof");
 }
 
+void sendRdbOnly(void) {
+    sendReplconf("rdb-only", "1");
+}
+
 /* Read raw bytes through a redisContext. The read operation is not greedy
  * and may not fill the buffer entirely.
  */
@@ -7137,7 +7198,6 @@ static void getRDB(clusterManagerNode *node) {
         node->context = NULL;
     fsync(fd);
     close(fd);
-    fprintf(stderr,"Transfer finished with success.\n");
     if (node) {
         sdsfree(filename);
         return;
@@ -7312,8 +7372,8 @@ static redisReply *sendScan(unsigned long long *it) {
     redisReply *reply;
 
     if (config.pattern)
-        reply = redisCommand(context,"SCAN %llu MATCH %s",
-            *it,config.pattern);
+        reply = redisCommand(context, "SCAN %llu MATCH %b",
+            *it, config.pattern, sdslen(config.pattern));
     else
         reply = redisCommand(context,"SCAN %llu",*it);
 
@@ -7925,23 +7985,16 @@ static void scanMode(void) {
     unsigned long long cur = 0;
 
     do {
-        if (config.pattern)
-            reply = redisCommand(context,"SCAN %llu MATCH %s",
-                cur,config.pattern);
-        else
-            reply = redisCommand(context,"SCAN %llu",cur);
-        if (reply == NULL) {
-            printf("I/O error\n");
-            exit(1);
-        } else if (reply->type == REDIS_REPLY_ERROR) {
-            printf("ERROR: %s\n", reply->str);
-            exit(1);
-        } else {
-            unsigned int j;
-
-            cur = strtoull(reply->element[0]->str,NULL,10);
-            for (j = 0; j < reply->element[1]->elements; j++)
+        reply = sendScan(&cur);
+        for (unsigned int j = 0; j < reply->element[1]->elements; j++) {
+            if (config.output == OUTPUT_STANDARD) {
+                sds out = sdscatrepr(sdsempty(), reply->element[1]->element[j]->str,
+                                     reply->element[1]->element[j]->len);
+                printf("%s\n", out);
+                sdsfree(out);
+            } else {
                 printf("%s\n", reply->element[1]->element[j]->str);
+            }
         }
         freeReplyObject(reply);
     } while(cur != 0);
@@ -8128,6 +8181,7 @@ int main(int argc, char **argv) {
     int firstarg;
     struct timeval tv;
 
+    memset(&config.sslconfig, 0, sizeof(config.sslconfig));
     config.hostip = sdsnew("127.0.0.1");
     config.hostport = 6379;
     config.hostsocket = NULL;
@@ -8258,6 +8312,7 @@ int main(int argc, char **argv) {
     if (config.getrdb_mode) {
         if (cliConnect(0) == REDIS_ERR) exit(1);
         sendCapa();
+        sendRdbOnly();
         getRDB(NULL);
     }
 
@@ -8323,6 +8378,6 @@ int main(int argc, char **argv) {
     if (config.eval) {
         return evalMode(argc,argv);
     } else {
-        return noninteractive(argc,convertToSds(argc,argv));
+        return noninteractive(argc,argv);
     }
 }

@@ -680,8 +680,7 @@ int quicklistReplaceAtIndex(quicklist *quicklist, long index, void *data,
     quicklistEntry entry;
     if (likely(quicklistIndex(quicklist, index, &entry))) {
         /* quicklistIndex provides an uncompressed node */
-        entry.node->zl = ziplistDelete(entry.node->zl, &entry.zi);
-        entry.node->zl = ziplistInsert(entry.node->zl, entry.zi, data, sz);
+        entry.node->zl = ziplistReplace(entry.node->zl, entry.zi, data, sz);
         quicklistNodeUpdateSz(entry.node);
         quicklistCompress(quicklist, entry.node);
         return 1;
@@ -1000,7 +999,7 @@ int quicklistDelRange(quicklist *quicklist, const long start,
              * can just delete the entire node without ziplist math. */
             delete_entire_node = 1;
             del = node->count;
-        } else if (entry.offset >= 0 && extent >= node->count) {
+        } else if (entry.offset >= 0 && extent + entry.offset >= node->count) {
             /* If deleting more nodes after this one, calculate delete based
              * on size of current node. */
             del = node->count - entry.offset;
@@ -1297,17 +1296,24 @@ void quicklistRotate(quicklist *quicklist) {
 
     /* First, get the tail entry */
     unsigned char *p = ziplistIndex(quicklist->tail->zl, -1);
-    unsigned char *value;
+    unsigned char *value, *tmp;
     long long longval;
     unsigned int sz;
     char longstr[32] = {0};
-    ziplistGet(p, &value, &sz, &longval);
+    ziplistGet(p, &tmp, &sz, &longval);
 
     /* If value found is NULL, then ziplistGet populated longval instead */
-    if (!value) {
+    if (!tmp) {
         /* Write the longval as a string so we can re-add it */
         sz = ll2string(longstr, sizeof(longstr), longval);
         value = (unsigned char *)longstr;
+    } else if (quicklist->len == 1) {
+        /* Copy buffer since there could be a memory overlap when move
+         * entity from tail to head in the same ziplist. */
+        value = zmalloc(sz);
+        memcpy(value, tmp, sz);
+    } else {
+        value = tmp;
     }
 
     /* Add tail entry to head (must happen before tail is deleted). */
@@ -1322,6 +1328,8 @@ void quicklistRotate(quicklist *quicklist) {
 
     /* Remove tail entry. */
     quicklistDelIndex(quicklist, quicklist->tail, &p);
+    if (value != (unsigned char*)longstr && value != tmp)
+        zfree(value);
 }
 
 /* pop from quicklist and return result in 'data' ptr.  Value of 'data'
@@ -1427,7 +1435,7 @@ void quicklistPush(quicklist *quicklist, void *value, const size_t sz,
  * Returns 1 on success (creation of new bookmark or override of an existing one).
  * Returns 0 on failure (reached the maximum supported number of bookmarks).
  * NOTE: use short simple names, so that string compare on find is quick.
- * NOTE: bookmakrk creation may re-allocate the quicklist, so the input pointer
+ * NOTE: bookmark creation may re-allocate the quicklist, so the input pointer
          may change and it's the caller responsibilty to update the reference.
  */
 int quicklistBookmarkCreate(quicklist **ql_ref, const char *name, quicklistNode *node) {
@@ -2236,6 +2244,17 @@ int quicklistTest(int argc, char *argv[]) {
             ql_verify(ql, 16, 500, 32, 20);
             quicklistDelRange(ql, 200, 100);
             ql_verify(ql, 14, 400, 32, 20);
+            quicklistRelease(ql);
+        }
+
+        TEST("delete less than fill but across nodes") {
+            quicklist *ql = quicklistNew(-2, options[_i]);
+            quicklistSetFill(ql, 32);
+            for (int i = 0; i < 500; i++)
+                quicklistPushTail(ql, genstr("hello", i + 1), 32);
+            ql_verify(ql, 16, 500, 32, 20);
+            quicklistDelRange(ql, 60, 10);
+            ql_verify(ql, 16, 490, 32, 20);
             quicklistRelease(ql);
         }
 

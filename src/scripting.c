@@ -619,7 +619,7 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
                               "at least one of the keys mentioned in the "
                               "command arguments");
             break;
-        case ACL_DENIED_AUTH:
+        case ACL_DENIED_CHANNEL:
             luaPushError(lua, "The user executing the script can't publish "
                               "to the channel mentioned in the command");
             break;
@@ -1544,7 +1544,7 @@ void evalGenericCommand(client *c, int evalsha) {
          * return an error. */
         if (evalsha) {
             lua_pop(lua,1); /* remove the error handler from the stack. */
-            addReply(c, shared.noscripterr);
+            addReplyErrorObject(c, shared.noscripterr);
             return;
         }
         if (luaCreateFunction(c,lua,c->argv[1]) == NULL) {
@@ -1668,12 +1668,11 @@ void evalGenericCommand(client *c, int evalsha) {
              * or just running a CPU costly read-only script on the slaves. */
             if (server.dirty == initial_server_dirty) {
                 rewriteClientCommandVector(c,3,
-                    resetRefCount(createStringObject("SCRIPT",6)),
-                    resetRefCount(createStringObject("LOAD",4)),
+                    shared.script,
+                    shared.load,
                     script);
             } else {
-                rewriteClientCommandArgument(c,0,
-                    resetRefCount(createStringObject("EVAL",4)));
+                rewriteClientCommandArgument(c,0,shared.eval);
                 rewriteClientCommandArgument(c,1,script);
             }
             forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
@@ -1696,7 +1695,7 @@ void evalShaCommand(client *c) {
          * not the right length. So we return an error ASAP, this way
          * evalGenericCommand() can be implemented without string length
          * sanity check */
-        addReply(c, shared.noscripterr);
+        addReplyErrorObject(c, shared.noscripterr);
         return;
     }
     if (!(c->flags & CLIENT_LUA_DEBUG))

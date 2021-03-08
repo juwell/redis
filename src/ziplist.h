@@ -1,5 +1,5 @@
 /*
- * å‹ç¼©åˆ—è¡¨
+ * Ñ¹ËõÁĞ±í
  * 
  * Copyright (c) 2009-2012, Pieter Noordhuis <pcnoordhuis at gmail dot com>
  * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
@@ -36,38 +36,51 @@
 #define ZIPLIST_HEAD 0
 #define ZIPLIST_TAIL 1
 
-// åˆ›å»ºä¸€ä¸ªæ–°çš„å‹ç¼©åˆ—è¡¨, O(1)
+/* Each entry in the ziplist is either a string or an integer. */
+typedef struct {
+    /* When string is used, it is provided with the length (slen). */
+    unsigned char *sval;
+    unsigned int slen;
+    /* When integer is used, 'sval' is NULL, and lval holds the value. */
+    long long lval;
+} ziplistEntry;
+
+// ´´½¨Ò»¸öĞÂµÄÑ¹ËõÁĞ±í, O(1)
 unsigned char *ziplistNew(void);
 unsigned char *ziplistMerge(unsigned char **first, unsigned char **second);
-// åˆ›å»ºä¸€ä¸ªåŒ…å«ç»™å®šå€¼çš„æ–°èŠ‚ç‚¹, å¹¶å°†è¿™ä¸ªæ–°èŠ‚ç‚¹æ·»åŠ åˆ°å‹ç¼©åˆ—è¡¨çš„è¡¨å¤´æˆ–è¡¨å°¾, å¹³å‡O(N), æœ€åO(N*N)
+// ´´½¨Ò»¸ö°üº¬¸ø¶¨ÖµµÄĞÂ½Úµã, ²¢½«Õâ¸öĞÂ½ÚµãÌí¼Óµ½Ñ¹ËõÁĞ±íµÄ±íÍ·»ò±íÎ², Æ½¾ùO(N), ×î»µO(N*N)
 unsigned char *ziplistPush(unsigned char *zl, unsigned char *s, unsigned int slen, int where);
-// è¿”å›å‹ç¼©åˆ—è¡¨ç»™å®šç´¢å¼•ä¸Šçš„èŠ‚ç‚¹, O(N)
+// ·µ»ØÑ¹ËõÁĞ±í¸ø¶¨Ë÷ÒıÉÏµÄ½Úµã, O(N)
 unsigned char *ziplistIndex(unsigned char *zl, int index);
-// è¿”å›ç»™å®šèŠ‚ç‚¹çš„ä¸‹ä¸€ä¸ªèŠ‚ç‚¹, O(1)
+// ·µ»Ø¸ø¶¨½ÚµãµÄÏÂÒ»¸ö½Úµã, O(1)
 unsigned char *ziplistNext(unsigned char *zl, unsigned char *p);
-// è¿”å›ç»™å®šèŠ‚ç‚¹çš„ä¸Šä¸€ä¸ªèŠ‚ç‚¹, O(1)
+// ·µ»Ø¸ø¶¨½ÚµãµÄÉÏÒ»¸ö½Úµã, O(1)
 unsigned char *ziplistPrev(unsigned char *zl, unsigned char *p);
-// è·å–ç»™å®šèŠ‚ç‚¹æ‰€ä¿å­˜çš„å€¼, O(1)
+// »ñÈ¡¸ø¶¨½ÚµãËù±£´æµÄÖµ, O(1)
 unsigned int ziplistGet(unsigned char *p, unsigned char **sval, unsigned int *slen, long long *lval);
-// å°†åŒ…å«ç»™å®šå€¼çš„æ–°èŠ‚ç‚¹æ’å…¥åˆ°ç»™å®šèŠ‚ç‚¹, å¹³å‡O(N), æœ€åO(N*N)
+// ½«°üº¬¸ø¶¨ÖµµÄĞÂ½Úµã²åÈëµ½¸ø¶¨½Úµã, Æ½¾ùO(N), ×î»µO(N*N)
 unsigned char *ziplistInsert(unsigned char *zl, unsigned char *p, unsigned char *s, unsigned int slen);
-// ä»å‹ç¼©åˆ—è¡¨ä¸­åˆ é™¤ç»™å®šèŠ‚ç‚¹, å¹³å‡O(N), æœ€åO(N*N)
+// ´ÓÑ¹ËõÁĞ±íÖĞÉ¾³ı¸ø¶¨½Úµã, Æ½¾ùO(N), ×î»µO(N*N)
 unsigned char *ziplistDelete(unsigned char *zl, unsigned char **p);
-// åˆ é™¤å‹ç¼©åˆ—è¡¨åœ¨ç»™å®šç´¢å¼•ä¸Šçš„è¿ç»­å¤šä¸ªèŠ‚ç‚¹, å¹³å‡O(N), æœ€åO(N*N)
+// É¾³ıÑ¹ËõÁĞ±íÔÚ¸ø¶¨Ë÷ÒıÉÏµÄÁ¬Ğø¶à¸ö½Úµã, Æ½¾ùO(N), ×î»µO(N*N)
 unsigned char *ziplistDeleteRange(unsigned char *zl, int index, unsigned int num);
+unsigned char *ziplistReplace(unsigned char *zl, unsigned char *p, unsigned char *s, unsigned int slen);
 unsigned int ziplistCompare(unsigned char *p, unsigned char *s, unsigned int slen);
-// åœ¨å‹ç¼©åˆ—è¡¨ä¸­æŸ¥æ‰¾å¹¶è¿”å›åŒ…å«äº†ç»™å®šå€¼çš„èŠ‚ç‚¹
-// å› ä¸ºèŠ‚ç‚¹çš„å€¼å¯èƒ½æ˜¯ä¸€ä¸ªå­—èŠ‚æ•°ç»„, æ‰€ä»¥æ£€æŸ¥èŠ‚ç‚¹å€¼å’Œç»™å®šå€¼æ˜¯å¦ç›¸åŒçš„å¤æ‚åº¦ä¸ºO(N)
-// æŸ¥æ‰¾æ•´ä¸ªåˆ—è¡¨çš„å¤æ‚åº¦ä¸ºO(N*N)
+// ÔÚÑ¹ËõÁĞ±íÖĞ²éÕÒ²¢·µ»Ø°üº¬ÁË¸ø¶¨ÖµµÄ½Úµã
+// ÒòÎª½ÚµãµÄÖµ¿ÉÄÜÊÇÒ»¸ö×Ö½ÚÊı×é, ËùÒÔ¼ì²é½ÚµãÖµºÍ¸ø¶¨ÖµÊÇ·ñÏàÍ¬µÄ¸´ÔÓ¶ÈÎªO(N)
+// ²éÕÒÕû¸öÁĞ±íµÄ¸´ÔÓ¶ÈÎªO(N*N)
 unsigned char *ziplistFind(unsigned char *zl, unsigned char *p, unsigned char *vstr, unsigned int vlen, unsigned int skip);
-// è¿”å›å‹ç¼©åˆ—è¡¨ç›®å‰åŒ…å«çš„èŠ‚ç‚¹æ•°é‡, èŠ‚ç‚¹æ•°å°äº65535æ—¶ä¸ºO(1), å¤§äº65535æ—¶ä¸ºO(N)
+// ·µ»ØÑ¹ËõÁĞ±íÄ¿Ç°°üº¬µÄ½ÚµãÊıÁ¿, ½ÚµãÊıĞ¡ÓÚ65535Ê±ÎªO(1), ´óÓÚ65535Ê±ÎªO(N)
 unsigned int ziplistLen(unsigned char *zl);
-// è¿”å›å‹ç¼©åˆ—è¡¨ç›®å‰å ç”¨çš„å†…å­˜å­—èŠ‚æ•°, O(1)
+// ·µ»ØÑ¹ËõÁĞ±íÄ¿Ç°Õ¼ÓÃµÄÄÚ´æ×Ö½ÚÊı, O(1)
 size_t ziplistBlobLen(unsigned char *zl);
 void ziplistRepr(unsigned char *zl);
 typedef int (*ziplistValidateEntryCB)(unsigned char* p, void* userdata);
 int ziplistValidateIntegrity(unsigned char *zl, size_t size, int deep,
                              ziplistValidateEntryCB entry_cb, void *cb_userdata);
+void ziplistRandomPair(unsigned char *zl, unsigned long total_count, ziplistEntry *key, ziplistEntry *val);
+void ziplistRandomPairs(unsigned char *zl, unsigned int count, ziplistEntry *keys, ziplistEntry *vals);
+unsigned int ziplistRandomPairsUnique(unsigned char *zl, unsigned int count, ziplistEntry *keys, ziplistEntry *vals);
 
 #ifdef REDIS_TEST
 int ziplistTest(int argc, char *argv[]);

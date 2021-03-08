@@ -398,7 +398,7 @@ int clusterLockConfig(char *filename) {
     /* To lock it, we need to open the file in a way it is created if
      * it does not exist, otherwise there is a race condition with other
      * processes. */
-    int fd = open(filename,O_WRONLY|O_CREAT,0644);
+    int fd = open(filename,O_WRONLY|O_CREAT|O_CLOEXEC,0644);
     if (fd == -1) {
         serverLog(LL_WARNING,
             "Can't open %s in order to acquire a lock: %s",
@@ -499,7 +499,7 @@ void clusterInit(void) {
     if (saveconf) clusterSaveConfigOrDie(1);
 
     /* We need a listening TCP port for our cluster messaging needs. */
-    server.cfd_count = 0;
+    server.cfd.count = 0;
 
     /* Port sanity check II
      * The other handshake port check is triggered too late to stop
@@ -509,23 +509,14 @@ void clusterInit(void) {
         serverLog(LL_WARNING, "Redis port number too high. "
                    "Cluster communication port is 10,000 port "
                    "numbers higher than your Redis port. "
-                   "Your Redis port number must be "
-                   "lower than 55535.");
+                   "Your Redis port number must be 55535 or less.");
         exit(1);
     }
-    if (listenToPort(port+CLUSTER_PORT_INCR,
-        server.cfd,&server.cfd_count) == C_ERR)
-    {
+    if (listenToPort(port+CLUSTER_PORT_INCR, &server.cfd) == C_ERR) {
         exit(1);
-    } else {
-        int j;
-
-        for (j = 0; j < server.cfd_count; j++) {
-            if (aeCreateFileEvent(server.el, server.cfd[j], AE_READABLE,
-                clusterAcceptHandler, NULL) == AE_ERR)
-                    serverPanic("Unrecoverable error creating Redis Cluster "
-                                "file event.");
-        }
+    }
+    if (createSocketAcceptHandler(&server.cfd, clusterAcceptHandler) != C_OK) {
+        serverPanic("Unrecoverable error creating Redis Cluster socket accept handler.");
     }
 
     /* The slots -> keys map is a radix tree. Initialize it here. */
@@ -2127,7 +2118,7 @@ int clusterProcessPacket(clusterLink *link) {
         /* Don't bother creating useless objects if there are no
          * Pub/Sub subscribers. */
         if (dictSize(server.pubsub_channels) ||
-           listLength(server.pubsub_patterns))
+           dictSize(server.pubsub_patterns))
         {
             channel_len = ntohl(hdr->data.publish.msg.channel_len);
             message_len = ntohl(hdr->data.publish.msg.message_len);
@@ -2816,7 +2807,7 @@ void clusterPropagatePublish(robj *channel, robj *message) {
  * SLAVE node specific functions
  * -------------------------------------------------------------------------- */
 
-/* This function sends a FAILOVE_AUTH_REQUEST message to every node in order to
+/* This function sends a FAILOVER_AUTH_REQUEST message to every node in order to
  * see if there is the quorum for this slave instance to failover its failing
  * master.
  *

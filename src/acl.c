@@ -814,8 +814,6 @@ void ACLAddAllowedSubcommand(user *u, unsigned long id, const char *sub) {
  *         invalid (contains non allowed characters).
  * ENOENT: The command name or command category provided with + or - is not
  *         known.
- * EBUSY:  The subcommand you want to add is about a command that is currently
- *         fully added.
  * EEXIST: You are adding a key pattern after "*" was already added. This is
  *         almost surely an error on the user side.
  * EISDIR: You are adding a channel pattern after "*" was already added. This is
@@ -976,22 +974,12 @@ int ACLSetUser(user *u, const char *op, ssize_t oplen) {
                 return C_ERR;
             }
 
-            /* The command should not be set right now in the command
-             * bitmap, because adding a subcommand of a fully added
-             * command is probably an error on the user side. */
             unsigned long id = ACLGetCommandID(copy);
-            if (ACLGetUserCommandBit(u,id) == 1) {
-                zfree(copy);
-                errno = EBUSY;
-                return C_ERR;
+            /* Add the subcommand to the list of valid ones, if the command is not set. */
+            if (ACLGetUserCommandBit(u,id) == 0) {
+                ACLAddAllowedSubcommand(u,id,sub);
             }
 
-            /* Add the subcommand to the list of valid ones. */
-            ACLAddAllowedSubcommand(u,id,sub);
-
-            /* We have to clear the command bit so that we force the
-             * subcommand check. */
-            ACLSetUserCommandBit(u,id,0);
             zfree(copy);
         }
     } else if (op[0] == '-' && op[1] != '@') {
@@ -1024,16 +1012,12 @@ int ACLSetUser(user *u, const char *op, ssize_t oplen) {
 
 /* Return a description of the error that occurred in ACLSetUser() according to
  * the errno value set by the function on error. */
-char *ACLSetUserStringError(void) {
-    char *errmsg = "Wrong format";
+const char *ACLSetUserStringError(void) {
+    const char *errmsg = "Wrong format";
     if (errno == ENOENT)
         errmsg = "Unknown command or category name in ACL";
     else if (errno == EINVAL)
         errmsg = "Syntax error";
-    else if (errno == EBUSY)
-        errmsg = "Adding a subcommand of a command already fully "
-                 "added is not allowed. Remove the command to start. "
-                 "Example: -DEBUG +DEBUG|DIGEST";
     else if (errno == EEXIST)
         errmsg = "Adding a pattern after the * pattern (or the "
                  "'allkeys' flag) is not valid and does not have any "
@@ -1070,7 +1054,6 @@ void ACLInit(void) {
     UsersToLoad = listCreate();
     ACLLog = listCreate();
     ACLInitDefaultUser();
-    server.requirepass = NULL; /* Only used for backward compatibility. */
 }
 
 /* Check the username and password pair and return C_OK if they are valid,
@@ -1454,7 +1437,7 @@ int ACLLoadConfiguredUsers(void) {
         /* Load every rule defined for this user. */
         for (int j = 1; aclrules[j]; j++) {
             if (ACLSetUser(u,aclrules[j],sdslen(aclrules[j])) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 serverLog(LL_WARNING,"Error loading ACL rule '%s' for "
                                      "the user named '%s': %s",
                           aclrules[j],aclrules[0],errmsg);
@@ -1587,7 +1570,7 @@ sds ACLLoadFromFile(const char *filename) {
         for (j = 2; j < argc; j++) {
             argv[j] = sdstrim(argv[j],"\t\r\n");
             if (ACLSetUser(fakeuser,argv[j],sdslen(argv[j])) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 errors = sdscatprintf(errors,
                          "%s:%d: %s. ",
                          server.acl_filename, linenum, errmsg);
@@ -1908,7 +1891,7 @@ void aclCommand(client *c) {
 
         for (int j = 3; j < c->argc; j++) {
             if (ACLSetUser(tempu,c->argv[j]->ptr,sdslen(c->argv[j]->ptr)) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 addReplyErrorFormat(c,
                     "Error in ACL SETUSER modifier '%s': %s",
                     (char*)c->argv[j]->ptr, errmsg);
@@ -2253,7 +2236,7 @@ void authCommand(client *c) {
             return;
         }
 
-        username = createStringObject("default",7);
+        username = shared.default_username; 
         password = c->argv[1];
     } else {
         username = c->argv[1];
@@ -2265,9 +2248,17 @@ void authCommand(client *c) {
     } else {
         addReplyError(c,"-WRONGPASS invalid username-password pair or user is disabled.");
     }
-
-    /* Free the "default" string object we created for the two
-     * arguments form. */
-    if (c->argc == 2) decrRefCount(username);
 }
 
+/* Set the password for the "default" ACL user. This implements supports for
+ * requirepass config, so passing in NULL will set the user to be nopass. */
+void ACLUpdateDefaultUserPassword(sds password) {
+    ACLSetUser(DefaultUser,"resetpass",-1);
+    if (password) {
+        sds aclop = sdscatlen(sdsnew(">"), password, sdslen(password));
+        ACLSetUser(DefaultUser,aclop,sdslen(aclop));
+        sdsfree(aclop);
+    } else {
+        ACLSetUser(DefaultUser,"nopass",-1);
+    }
+}
